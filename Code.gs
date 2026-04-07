@@ -1,372 +1,561 @@
 // ============================================================
-// 設定 — setup() を実行する前に入力してください
+// 設定
 // ============================================================
 const CHATWORK_API_TOKEN = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_TOKEN');
 const CHATWORK_API_BASE  = 'https://api.chatwork.com/v2';
 
-// シート名
-const SHEET_TASKS   = 'タスク';
-const SHEET_MEMBERS = 'メンバー';
-const SHEET_ROOMS   = 'ルーム';
-const SHEET_LOG     = 'ログ';
+const SHEET_TASKS     = 'タスク';
+const SHEET_MEMBERS   = 'メンバー';
+const SHEET_ROOMS     = 'ルーム';
+const SHEET_LOG       = 'ログ';
+const SHEET_DASHBOARD = 'ダッシュボード';
+const SHEET_PROJECTS  = 'プロジェクト';
 
-// ステータス
 const STATUS_PENDING  = '未完了';
 const STATUS_FINISHED = '完了';
 
 // ============================================================
-// セットアップ — スクリプトを貼り付けたら一度だけ実行してください
+// セットアップ — 一度だけ実行
 // ============================================================
 function setup() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   setupSheets();
+
+  // ルームとメンバーが既にある場合はスキップ
+  if (!ss.getSheetByName(SHEET_ROOMS) || ss.getSheetByName(SHEET_ROOMS).getLastRow() <= 1) syncRooms();
+  if (!ss.getSheetByName(SHEET_MEMBERS) || ss.getSheetByName(SHEET_MEMBERS).getLastRow() <= 1) syncMembers();
+
+  setupDashboard();
   createTrigger();
   createEditTrigger();
-  Logger.log('セットアップ完了！ルームシートにルームIDを追加すると自動的にポーリングが始まります。');
+
+  Logger.log('セットアップ完了！ルームシートで監視したいルームの D列 を「YES」に変更してください。');
 }
 
-function createEditTrigger() {
-  // 既存の onEdit トリガーを削除して重複を防ぐ
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'onEdit') ScriptApp.deleteTrigger(t);
-  });
-
-  ScriptApp.newTrigger('onEdit')
-    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
-    .onEdit()
-    .create();
-
-  Logger.log('編集トリガー設定完了：ステータス変更を自動検知します。');
-}
-
+// ============================================================
+// シート初期化
+// ============================================================
 function setupSheets() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // ── タスク ─────────────────────────────────────────────────
-  let tasks = ss.getSheetByName(SHEET_TASKS);
-  if (!tasks) tasks = ss.insertSheet(SHEET_TASKS);
-  if (tasks.getLastRow() === 0) {
-    tasks.appendRow([
-      'タスクID', '作成日時', '更新日時', '内容',
-      '担当者ID（aid）', '担当者名',
-      '作成者ID（aid）', '作成者名',
-      'ルームID', 'メッセージID', 'ステータス'
-    ]);
-    tasks.getRange(1, 1, 1, 11).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
-    tasks.setFrozenRows(1);
+  // ── タスク（12列）──
+  let s = ss.getSheetByName(SHEET_TASKS);
+  if (!s) s = ss.insertSheet(SHEET_TASKS);
+  if (s.getLastRow() === 0) {
+    s.appendRow(['タスクID','作成日時','更新日時','内容','担当者ID','担当者名','作成者ID','作成者名','ルームID','CWタスクID','ステータス','プロジェクト']);
+    s.getRange(1,1,1,12).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
   }
 
-  // ── メンバー ───────────────────────────────────────────────
-  let members = ss.getSheetByName(SHEET_MEMBERS);
-  if (!members) members = ss.insertSheet(SHEET_MEMBERS);
-  if (members.getLastRow() === 0) {
-    members.appendRow(['アカウントID（aid）', '名前']);
-    members.getRange(1, 1, 1, 2).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
-    members.setFrozenRows(1);
+  // ── メンバー（4列）──
+  s = ss.getSheetByName(SHEET_MEMBERS);
+  if (!s) s = ss.insertSheet(SHEET_MEMBERS);
+  if (s.getLastRow() === 0) {
+    s.appendRow(['アカウントID','名前','ルームID','ルーム名']);
+    s.getRange(1,1,1,4).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
   }
 
-  // ── ルーム ─────────────────────────────────────────────────
-  let rooms = ss.getSheetByName(SHEET_ROOMS);
-  if (!rooms) rooms = ss.insertSheet(SHEET_ROOMS);
-  if (rooms.getLastRow() === 0) {
-    rooms.appendRow(['ルームID', 'ルーム名', '最終確認日時（Unixタイムスタンプ）']);
-    rooms.getRange(1, 1, 1, 3).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
-    rooms.setFrozenRows(1);
+  // ── ルーム（4列：ID, 名前, 最終確認, 監視フラグ）──
+  s = ss.getSheetByName(SHEET_ROOMS);
+  if (!s) s = ss.insertSheet(SHEET_ROOMS);
+  if (s.getLastRow() === 0) {
+    s.appendRow(['ルームID','ルーム名','最終確認日時','タスク監視']);
+    s.getRange(1,1,1,4).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
   }
 
-  // ── ログ ───────────────────────────────────────────────────
-  let log = ss.getSheetByName(SHEET_LOG);
-  if (!log) log = ss.insertSheet(SHEET_LOG);
-  if (log.getLastRow() === 0) {
-    log.appendRow(['日時', 'タスクID', '変更前ステータス', '変更後ステータス', '変更者']);
-    log.getRange(1, 1, 1, 5).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
-    log.setFrozenRows(1);
+  // ── プロジェクト（2列）──
+  s = ss.getSheetByName(SHEET_PROJECTS);
+  if (!s) s = ss.insertSheet(SHEET_PROJECTS);
+  if (s.getLastRow() === 0) {
+    s.appendRow(['アカウントID','プロジェクト名']);
+    s.getRange(1,1,1,2).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
   }
 
-  Logger.log('全シートの初期化が完了しました。');
+  // ── ログ（5列）──
+  s = ss.getSheetByName(SHEET_LOG);
+  if (!s) s = ss.insertSheet(SHEET_LOG);
+  if (s.getLastRow() === 0) {
+    s.appendRow(['日時','タスクID','変更前','変更後','変更者']);
+    s.getRange(1,1,1,5).setFontWeight('bold').setBackground('#4A90D9').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
+  }
+
+  Logger.log('シート初期化完了。');
 }
 
 function createTrigger() {
-  // 既存の pollChatWork トリガーを削除して重複を防ぐ
-  ScriptApp.getProjectTriggers().forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'pollChatWork') {
-      ScriptApp.deleteTrigger(trigger);
-    }
+  // 既存トリガーを削除
+  ScriptApp.getProjectTriggers().forEach(t => {
+    const name = t.getHandlerFunction();
+    if (name === 'pollChatWork' || name === 'dailySync') ScriptApp.deleteTrigger(t);
   });
 
-  // 1分ごとにポーリング
-  ScriptApp.newTrigger('pollChatWork')
-    .timeBased()
-    .everyMinutes(1)
-    .create();
+  // 1分ごとのタスクポーリング
+  ScriptApp.newTrigger('pollChatWork').timeBased().everyMinutes(1).create();
 
-  Logger.log('トリガー設定完了：pollChatWork が1分ごとに実行されます。');
+  // 毎日午前6時にルーム・メンバー自動同期
+  ScriptApp.newTrigger('dailySync').timeBased().atHour(6).everyDays(1).create();
+
+  Logger.log('トリガー設定完了（ポーリング + 毎日同期）。');
+}
+
+/**
+ * 毎日自動実行 — 新しいルームとメンバーを同期
+ */
+function dailySync() {
+  syncRooms();
+  Utilities.sleep(3000); // API制限回避
+  syncMembers();
+  Logger.log('日次同期完了。');
+}
+
+function createEditTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'onEdit') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onEdit').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onEdit().create();
+  Logger.log('編集トリガー設定完了。');
 }
 
 // ============================================================
-// メインポーリング — 1分ごとに自動実行されます
+// メインポーリング — 監視フラグ=YESのルームだけをポーリング
 // ============================================================
 function pollChatWork() {
   const ss         = SpreadsheetApp.getActiveSpreadsheet();
   const roomsSheet = ss.getSheetByName(SHEET_ROOMS);
+  if (!roomsSheet || roomsSheet.getLastRow() <= 1) return;
 
-  if (!roomsSheet || roomsSheet.getLastRow() <= 1) {
-    Logger.log('ルームシートにルームが登録されていません。ルームIDとルーム名を追加してください。');
-    return;
-  }
+  const rows = roomsSheet.getRange(2, 1, roomsSheet.getLastRow() - 1, 4).getValues();
 
-  const rows = roomsSheet.getRange(2, 1, roomsSheet.getLastRow() - 1, 3).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    const roomId      = String(rows[i][0]).trim();
+    const roomName    = String(rows[i][1]).trim();
+    const lastChecked = rows[i][2] ? Number(rows[i][2]) : 0;
+    const monitor     = String(rows[i][3]).trim().toUpperCase();
 
-  rows.forEach((row, i) => {
-    const roomId      = String(row[0]).trim();
-    const roomName    = String(row[1]).trim();
-    const lastChecked = row[2] ? Number(row[2]) : 0;
-
-    if (!roomId) return;
+    if (!roomId || monitor !== 'YES') continue;
 
     try {
+      // ── Chatworkタスク同期 ──
+      syncChatworkTasks(roomId, roomName);
+
+      // ── メッセージ（【プロジェクト追加】コマンドのみ） ──
+      if (lastChecked === 0) {
+        roomsSheet.getRange(i + 2, 3).setValue(Math.floor(Date.now() / 1000));
+        continue;
+      }
+
       const messages = fetchMessages(roomId, lastChecked);
-
       if (messages.length > 0) {
-        processMessages(messages, roomId, roomName);
-
-        // 次回のポーリングで新しいメッセージだけ取得するため最新の送信時刻を保存
-        const latestTime = Math.max(...messages.map(m => m.send_time));
-        roomsSheet.getRange(i + 2, 3).setValue(latestTime);
+        processCommands(messages);
+        roomsSheet.getRange(i + 2, 3).setValue(Math.max(...messages.map(m => m.send_time)));
       }
     } catch (e) {
-      Logger.log(`ルーム ${roomId} のポーリング中にエラーが発生しました: ${e.message}`);
+      Logger.log(`ルーム ${roomId} エラー: ${e.message}`);
     }
-  });
+  }
 }
 
 // ============================================================
 // ChatWork API
 // ============================================================
 function fetchMessages(roomId, since) {
-  const url = `${CHATWORK_API_BASE}/rooms/${roomId}/messages?force=0`;
-
-  const res = UrlFetchApp.fetch(url, {
-    method : 'GET',
-    headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN },
-    muteHttpExceptions: true
+  const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/messages?force=0`, {
+    headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
   });
+  if (res.getResponseCode() !== 200) return [];
+  const msgs = JSON.parse(res.getContentText());
+  return since > 0 ? msgs.filter(m => m.send_time > since) : msgs;
+}
 
-  if (res.getResponseCode() !== 200) {
-    Logger.log(`ChatWork APIエラー [ルーム ${roomId}]: ${res.getResponseCode()} — ${res.getContentText()}`);
-    return [];
+function fetchChatworkTasks(roomId, status) {
+  const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/tasks?status=${status}`, {
+    headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+  });
+  const code = res.getResponseCode();
+  if (code === 429) {
+    Utilities.sleep(5000);
+    const retry = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/tasks?status=${status}`, {
+      headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+    });
+    return retry.getResponseCode() === 200 ? JSON.parse(retry.getContentText()) : [];
   }
-
-  const messages = JSON.parse(res.getContentText());
-
-  // 最終確認日時より新しいメッセージのみ返す
-  return since > 0 ? messages.filter(m => m.send_time > since) : messages;
+  return code === 200 ? JSON.parse(res.getContentText()) : [];
 }
 
 // ============================================================
-// メッセージ処理
+// Chatworkタスク同期 — プロジェクト検出 + 重複防止 + 完了同期
 // ============================================================
-function processMessages(messages, roomId, roomName) {
-  messages.forEach(message => {
-    const body = message.body || '';
+function syncChatworkTasks(roomId, roomName) {
+  const projectMap = getProjectMap();
 
-    // 【タスク】キーワードがないメッセージは無視
-    if (!body.includes('【タスク】')) return;
+  // ── 未完了タスクを取得 ──
+  const openTasks = fetchChatworkTasks(roomId, 'open');
 
-    // メッセージ内の [To:アカウントID] タグをすべて取得
-    const toTags = body.match(/\[To:(\d+)\]/g);
-    if (!toTags) return; // タグなし → スキップ
+  // パス1: 全エントリからプロジェクト名を検出
+  // 同じタスク内容+作成者のグループで、プロジェクトアカウントがいればそれがプロジェクト名
+  const projectByGroup = {};
+  openTasks.forEach(t => {
+    const aid = String(t.account.account_id);
+    const cid = String(t.assigned_by_account.account_id);
+    const key = cid + '|' + (t.body || '');
+    if (projectMap[aid]) projectByGroup[key] = projectMap[aid];
+    if (projectMap[cid]) projectByGroup[key] = projectMap[cid];
+  });
 
-    const senderId   = String(message.account.account_id);
-    const senderName = message.account.name;
+  // パス2: 人のタスクだけ追加
+  openTasks.forEach(t => {
+    const cwTaskId   = String(t.task_id);
+    const aid        = String(t.account.account_id);
+    const cid        = String(t.assigned_by_account.account_id);
+    const key        = cid + '|' + (t.body || '');
 
-    // タグごとにタスクを作成
-    toTags.forEach(tag => {
-      const assigneeId   = tag.match(/\[To:(\d+)\]/)[1];
-      const assigneeName = lookupMemberName(assigneeId);
+    // プロジェクトアカウントはスキップ（ラベルのみ）
+    if (projectMap[aid]) return;
 
-      // 説明文から [To:X] タグとその他のタグを除去
-      const description = body
-        .replace(/\[To:\d+\][^\[]*/g, '')
-        .replace(/\[.*?\]/g, '')
-        .trim() || body;
+    // 既にシートにあればスキップ
+    if (taskExistsByCwId(cwTaskId)) return;
 
-      createTask({
-        description   : description,
-        assignedToId  : assigneeId,
-        assignedToName: assigneeName,
-        createdById   : senderId,
-        createdByName : senderName,
-        roomId        : roomId,
-        messageId     : String(message.message_id)
-      });
+    createTask({
+      description   : t.body || '',
+      assignedToId  : aid,
+      assignedToName: t.account.name,
+      createdById   : cid,
+      createdByName : t.assigned_by_account.name,
+      roomId        : roomId,
+      cwTaskId      : cwTaskId,
+      project       : projectByGroup[key] || ''
     });
+  });
+
+  // ── 完了タスクを同期 ──
+  const doneTasks = fetchChatworkTasks(roomId, 'done');
+  doneTasks.forEach(t => {
+    if (projectMap[String(t.account.account_id)]) return;
+    markTaskDoneByCwId(String(t.task_id));
   });
 }
 
 // ============================================================
 // タスク管理
 // ============================================================
-function createTask(data) {
-  // 同じメッセージ × 同じ担当者の重複タスクを防ぐ
-  if (taskExistsForMessage(data.messageId, data.assignedToId)) {
-    Logger.log(`重複スキップ — メッセージ ${data.messageId}（担当者: ${data.assignedToId}）のタスクはすでに存在します。`);
-    return;
-  }
+function createTask(d) {
+  if (taskExistsByCwId(d.cwTaskId)) return;
 
-  const ss         = SpreadsheetApp.getActiveSpreadsheet();
-  const tasksSheet = ss.getSheetByName(SHEET_TASKS);
-  const taskId     = generateTaskId();
-  const now        = new Date();
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_TASKS);
+  const now   = new Date();
 
-  tasksSheet.appendRow([
-    taskId,
-    now,
-    now,
-    data.description,
-    data.assignedToId,
-    data.assignedToName,
-    data.createdById,
-    data.createdByName,
-    data.roomId,
-    data.messageId,
-    STATUS_PENDING
+  sheet.appendRow([
+    'TASK-' + now.getTime(), now, now,
+    d.description, d.assignedToId, d.assignedToName,
+    d.createdById, d.createdByName, d.roomId,
+    d.cwTaskId, STATUS_PENDING, d.project || ''
   ]);
 
-  // ステータスセルに色を付ける
-  const lastRow = tasksSheet.getLastRow();
-  applyStatusColor(tasksSheet, lastRow, STATUS_PENDING);
+  const row = sheet.getLastRow();
+  sheet.getRange(row, 11).setBackground('#FFF9C4');
 
-  addLog(taskId, '', STATUS_PENDING, data.createdByName);
-  Logger.log(`タスク作成: ${taskId} → 担当者: ${data.assignedToName}`);
+  addLog('TASK-' + now.getTime(), '', STATUS_PENDING, d.createdByName);
+  Logger.log(`タスク作成: ${d.assignedToName} — ${d.description.substring(0,30)}`);
+  refreshDashboard();
 }
 
-/**
- * タスクのステータスを更新します。
- * newStatus は '未完了' または '完了' のいずれか。
- * changedBy は変更者の名前またはアカウントID。
- */
-function updateTaskStatus(taskId, newStatus, changedBy) {
-  const validStatuses = [STATUS_PENDING, STATUS_FINISHED];
-  if (!validStatuses.includes(newStatus)) {
-    Logger.log(`無効なステータス: ${newStatus}。使用できる値: 未完了、完了`);
-    return false;
-  }
+function taskExistsByCwId(cwTaskId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_TASKS);
+  if (!sheet || sheet.getLastRow() <= 1) return false;
+  const ids = sheet.getRange(2, 10, sheet.getLastRow() - 1, 1).getValues();
+  return ids.some(r => String(r[0]) === cwTaskId);
+}
 
-  const ss         = SpreadsheetApp.getActiveSpreadsheet();
-  const tasksSheet = ss.getSheetByName(SHEET_TASKS);
-
-  if (tasksSheet.getLastRow() <= 1) return false;
-
-  const data = tasksSheet.getRange(2, 1, tasksSheet.getLastRow() - 1, 11).getValues();
-
+function markTaskDoneByCwId(cwTaskId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_TASKS);
+  if (!sheet || sheet.getLastRow() <= 1) return;
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
   for (let i = 0; i < data.length; i++) {
-    if (String(data[i][0]) === String(taskId)) {
-      const oldStatus = data[i][10];
-      const rowNumber = i + 2;
-
-      tasksSheet.getRange(rowNumber, 3).setValue(new Date());  // 更新日時
-      tasksSheet.getRange(rowNumber, 11).setValue(newStatus);  // ステータス
-      applyStatusColor(tasksSheet, rowNumber, newStatus);
-
-      addLog(taskId, oldStatus, newStatus, changedBy);
-      Logger.log(`タスク ${taskId}: ${oldStatus} → ${newStatus}`);
-      return true;
+    if (String(data[i][9]) === cwTaskId && String(data[i][10]) === STATUS_PENDING) {
+      const row = i + 2;
+      sheet.getRange(row, 3).setValue(new Date());
+      sheet.getRange(row, 11).setValue(STATUS_FINISHED);
+      sheet.getRange(row, 11).setBackground('#C8E6C9');
+      addLog(data[i][0], STATUS_PENDING, STATUS_FINISHED, 'Chatwork');
+      Logger.log(`タスク完了: ${data[i][0]}`);
+      refreshDashboard();
     }
   }
+}
 
-  Logger.log(`タスクが見つかりません: ${taskId}`);
-  return false;
+// ============================================================
+// コマンド処理（【プロジェクト追加】）
+// ============================================================
+function processCommands(messages) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PROJECTS);
+  messages.forEach(m => {
+    const match = (m.body || '').match(/【プロジェクト追加】\s*(.+?)\s+(\d+)/);
+    if (!match) return;
+    const name = match[1].trim();
+    const id   = match[2].trim();
+    const existing = getProjectMap();
+    if (existing[id]) return;
+    sheet.appendRow([id, name]);
+    Logger.log(`プロジェクト追加: ${name} (${id})`);
+  });
 }
 
 // ============================================================
 // ログ
 // ============================================================
-function addLog(taskId, oldStatus, newStatus, changedBy) {
-  const ss  = SpreadsheetApp.getActiveSpreadsheet();
-  const log = ss.getSheetByName(SHEET_LOG);
+function addLog(taskId, oldS, newS, who) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+  if (sheet) sheet.appendRow([new Date(), taskId, oldS, newS, who]);
+}
 
-  if (!log) {
-    Logger.log('ログシートが見つかりません。setup() を実行してください。');
+// ============================================================
+// ルーム自動取得
+// ============================================================
+function syncRooms() {
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_ROOMS);
+  const existing = new Set();
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2,1,sheet.getLastRow()-1,1).getValues().forEach(r => existing.add(String(r[0])));
+  }
+
+  try {
+    const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms`, {
+      headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return;
+    const rooms = JSON.parse(res.getContentText());
+    const newRows = [];
+    rooms.forEach(r => {
+      const id = String(r.room_id);
+      if (!existing.has(id)) { newRows.push([id, r.name, '', '']); existing.add(id); }
+    });
+    if (newRows.length > 0) sheet.getRange(sheet.getLastRow()+1, 1, newRows.length, 4).setValues(newRows);
+    Logger.log(`ルーム同期: ${newRows.length}件追加（合計${existing.size}件）`);
+  } catch(e) { Logger.log(`ルーム取得エラー: ${e.message}`); }
+}
+
+// ============================================================
+// メンバー自動取得
+// ============================================================
+function syncMembers() {
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const rSheet = ss.getSheetByName(SHEET_ROOMS);
+  const mSheet = ss.getSheetByName(SHEET_MEMBERS);
+  if (!rSheet || rSheet.getLastRow() <= 1) return;
+
+  const existing = new Set();
+  if (mSheet.getLastRow() > 1) {
+    mSheet.getRange(2,1,mSheet.getLastRow()-1,4).getValues()
+      .forEach(r => existing.add(String(r[0])+'_'+String(r[2])));
+  }
+
+  const rooms = rSheet.getRange(2,1,rSheet.getLastRow()-1,2).getValues();
+  const newRows = [];
+
+  for (let i = 0; i < rooms.length; i++) {
+    const roomId = String(rooms[i][0]).trim();
+    const roomName = String(rooms[i][1]).trim();
+    if (!roomId) continue;
+
+    try {
+      if (i > 0) Utilities.sleep(1000);
+      const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/members`, {
+        headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+      });
+      const code = res.getResponseCode();
+      if (code === 429) { Utilities.sleep(10000); continue; }
+      if (code !== 200) continue;
+      JSON.parse(res.getContentText()).forEach(m => {
+        const key = String(m.account_id)+'_'+roomId;
+        if (!existing.has(key)) { newRows.push([String(m.account_id), m.name, roomId, roomName]); existing.add(key); }
+      });
+    } catch(e) { Logger.log(`メンバー取得エラー [${roomId}]: ${e.message}`); }
+  }
+
+  if (newRows.length > 0) mSheet.getRange(mSheet.getLastRow()+1, 1, newRows.length, 4).setValues(newRows);
+  if (mSheet.getLastRow() > 2) mSheet.getRange(2,1,mSheet.getLastRow()-1,4).sort({column:4,ascending:true});
+  Logger.log(`メンバー同期: ${newRows.length}名追加`);
+}
+
+// ============================================================
+// ダッシュボード
+// ============================================================
+function setupDashboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let dash = ss.getSheetByName(SHEET_DASHBOARD);
+  if (dash) ss.deleteSheet(dash);
+  dash = ss.insertSheet(SHEET_DASHBOARD, 0);
+
+  dash.getRange('A:H').setFontFamily('Arial').setFontSize(10);
+
+  // タイトル
+  dash.getRange('A1:H1').merge().setValue('タスク管理ダッシュボード')
+    .setFontSize(16).setFontWeight('bold').setFontColor('#FFFFFF')
+    .setBackground('#2C3E50').setHorizontalAlignment('center').setVerticalAlignment('middle');
+  dash.setRowHeight(1, 45);
+
+  // フィルター
+  dash.getRange('A2').setValue('担当者').setFontWeight('bold').setFontSize(11)
+    .setBackground('#34495E').setFontColor('#FFFFFF').setHorizontalAlignment('center');
+  dash.getRange('B2:C2').merge().setValue('すべて').setFontSize(11)
+    .setBackground('#FFFFFF').setFontColor('#2C3E50')
+    .setBorder(true,true,true,true,false,false,'#BDC3C7',SpreadsheetApp.BorderStyle.SOLID)
+    .setHorizontalAlignment('center');
+  dash.getRange('D2').setValue('').setBackground('#34495E');
+  dash.getRange('E2').setValue('プロジェクト').setFontWeight('bold').setFontSize(11)
+    .setBackground('#34495E').setFontColor('#FFFFFF').setHorizontalAlignment('center');
+  dash.getRange('F2:H2').merge().setValue('すべて').setFontSize(11)
+    .setBackground('#FFFFFF').setFontColor('#2C3E50')
+    .setBorder(true,true,true,true,false,false,'#BDC3C7',SpreadsheetApp.BorderStyle.SOLID)
+    .setHorizontalAlignment('center');
+  dash.setRowHeight(2, 35);
+
+  // ドロップダウン
+  const mRule = SpreadsheetApp.newDataValidation().requireValueInList(['すべて'].concat(getUniqueMemberNames())).setAllowInvalid(false).build();
+  dash.getRange('B2').setDataValidation(mRule);
+  const pRule = SpreadsheetApp.newDataValidation().requireValueInList(['すべて'].concat(getUniqueProjectNames())).setAllowInvalid(false).build();
+  dash.getRange('F2').setDataValidation(pRule);
+
+  // サマリー
+  dash.getRange('A3').setValue('合計').setFontWeight('bold').setBackground('#ECF0F1').setHorizontalAlignment('center');
+  dash.getRange('B3').setValue('0').setFontWeight('bold').setFontSize(14).setBackground('#ECF0F1').setHorizontalAlignment('center');
+  dash.getRange('C3').setValue('未完了').setFontWeight('bold').setBackground('#FFF9C4').setHorizontalAlignment('center');
+  dash.getRange('D3').setValue('0').setFontWeight('bold').setFontSize(14).setBackground('#FFF9C4').setHorizontalAlignment('center');
+  dash.getRange('E3').setValue('完了').setFontWeight('bold').setBackground('#C8E6C9').setHorizontalAlignment('center');
+  dash.getRange('F3').setValue('0').setFontWeight('bold').setFontSize(14).setBackground('#C8E6C9').setHorizontalAlignment('center');
+  dash.getRange('G3').setValue('完了率').setFontWeight('bold').setBackground('#D5F5E3').setHorizontalAlignment('center');
+  dash.getRange('H3').setValue('0%').setFontWeight('bold').setFontSize(14).setBackground('#D5F5E3').setHorizontalAlignment('center');
+  dash.setRowHeight(3, 32);
+
+  // スペーサー
+  dash.setRowHeight(4, 6);
+  dash.getRange('A4:H4').setBackground('#2C3E50');
+
+  // テーブルヘッダー
+  dash.getRange(5,1,1,8).setValues([['No.','作成日時','内容','担当者','作成者','プロジェクト','ステータス','更新日時']])
+    .setFontWeight('bold').setFontSize(10).setBackground('#2C3E50').setFontColor('#FFFFFF').setHorizontalAlignment('center');
+  dash.setRowHeight(5, 28);
+  dash.setFrozenRows(5);
+
+  dash.setColumnWidth(1,50); dash.setColumnWidth(2,140); dash.setColumnWidth(3,280);
+  dash.setColumnWidth(4,130); dash.setColumnWidth(5,130); dash.setColumnWidth(6,130);
+  dash.setColumnWidth(7,90); dash.setColumnWidth(8,140);
+
+  refreshDashboard();
+  Logger.log('ダッシュボード作成完了。');
+}
+
+function refreshDashboard() {
+  const ss   = SpreadsheetApp.getActiveSpreadsheet();
+  const dash = ss.getSheetByName(SHEET_DASHBOARD);
+  const task = ss.getSheetByName(SHEET_TASKS);
+  if (!dash) return;
+
+  const startRow = 6, cols = 8;
+
+  if (!task || task.getLastRow() <= 1) {
+    if (dash.getLastRow() >= startRow) { const r=dash.getRange(startRow,1,dash.getLastRow()-startRow+1,cols); r.breakApart(); r.clearContent().clearFormat(); }
+    dash.getRange('B3').setValue('0'); dash.getRange('D3').setValue('0');
+    dash.getRange('F3').setValue('0'); dash.getRange('H3').setValue('0%');
     return;
   }
 
-  log.appendRow([new Date(), taskId, oldStatus, newStatus, changedBy]);
+  const fPerson  = dash.getRange('B2').getValue();
+  const fProject = dash.getRange('F2').getValue();
+  const lastCol  = Math.max(task.getLastColumn(), 12);
+  const data     = task.getRange(2, 1, task.getLastRow()-1, lastCol).getValues();
+
+  const filtered = data.filter(r => {
+    if (fPerson !== 'すべて' && String(r[5]) !== fPerson && String(r[7]) !== fPerson) return false;
+    if (fProject !== 'すべて' && String(r[11]||'') !== fProject) return false;
+    return true;
+  });
+
+  const total = filtered.length;
+  const pending = filtered.filter(r => String(r[10]) === STATUS_PENDING).length;
+  const done = filtered.filter(r => String(r[10]) === STATUS_FINISHED).length;
+  const rate = total > 0 ? Math.round(done/total*100) : 0;
+
+  dash.getRange('B3').setValue(total).setFontWeight('bold').setFontSize(14).setBackground('#ECF0F1').setHorizontalAlignment('center');
+  dash.getRange('D3').setValue(pending).setFontWeight('bold').setFontSize(14).setBackground('#FFF9C4').setHorizontalAlignment('center');
+  dash.getRange('F3').setValue(done).setFontWeight('bold').setFontSize(14).setBackground('#C8E6C9').setHorizontalAlignment('center');
+  dash.getRange('H3').setValue(rate+'%').setFontWeight('bold').setFontSize(14).setBackground('#D5F5E3').setHorizontalAlignment('center');
+
+  if (dash.getLastRow() >= startRow) { const r=dash.getRange(startRow,1,dash.getLastRow()-startRow+1,cols); r.breakApart(); r.clearContent().clearFormat(); }
+
+  if (total === 0) { dash.getRange(startRow,1).setValue('該当するタスクはありません。').setFontColor('#95A5A6').setFontStyle('italic'); return; }
+
+  const out = filtered.map((r,i) => [i+1, r[1], r[3], r[5], r[7], String(r[11]||''), r[10], r[2]]);
+  dash.getRange(startRow, 1, out.length, cols).setValues(out);
+
+  for (let i = 0; i < out.length; i++) {
+    const row = startRow + i;
+    const status = String(out[i][6]);
+    dash.getRange(row,1,1,cols).setBackground(i%2===0?'#FFFFFF':'#F8F9FA')
+      .setBorder(false,false,true,false,false,false,'#ECF0F1',SpreadsheetApp.BorderStyle.SOLID);
+    const sc = dash.getRange(row, 7);
+    if (status === STATUS_PENDING)  sc.setBackground('#FFF9C4').setFontColor('#F39C12').setFontWeight('bold');
+    if (status === STATUS_FINISHED) sc.setBackground('#C8E6C9').setFontColor('#27AE60').setFontWeight('bold');
+    dash.getRange(row, 1).setHorizontalAlignment('center');
+  }
+  Logger.log(`ダッシュボード更新: ${total}件`);
 }
 
 // ============================================================
-// ヘルパー関数
+// ヘルパー
 // ============================================================
-function generateTaskId() {
-  return 'TASK-' + new Date().getTime();
+function getUniqueMemberNames() {
+  const s = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MEMBERS);
+  if (!s || s.getLastRow() <= 1) return [];
+  return [...new Set(s.getRange(2,2,s.getLastRow()-1,1).getValues().map(r=>String(r[0])).filter(n=>n))].sort();
 }
 
-function taskExistsForMessage(messageId, assignedToId) {
-  const ss         = SpreadsheetApp.getActiveSpreadsheet();
-  const tasksSheet = ss.getSheetByName(SHEET_TASKS);
-
-  if (!tasksSheet || tasksSheet.getLastRow() <= 1) return false;
-
-  // J列（10番目）= メッセージID、E列（5番目）= 担当者ID
-  // 同じメッセージでも担当者が違えば別タスクとして作成する
-  const data = tasksSheet.getRange(2, 5, tasksSheet.getLastRow() - 1, 6).getValues();
-  return data.some(row => String(row[5]) === String(messageId) && String(row[0]) === String(assignedToId));
+function getUniqueProjectNames() {
+  const s = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PROJECTS);
+  if (!s || s.getLastRow() <= 1) return [];
+  return [...new Set(s.getRange(2,2,s.getLastRow()-1,1).getValues().map(r=>String(r[0])).filter(n=>n))].sort();
 }
 
-function lookupMemberName(accountId) {
-  const ss      = SpreadsheetApp.getActiveSpreadsheet();
-  const members = ss.getSheetByName(SHEET_MEMBERS);
-
-  if (!members || members.getLastRow() <= 1) return accountId;
-
-  const data  = members.getRange(2, 1, members.getLastRow() - 1, 2).getValues();
-  const found = data.find(row => String(row[0]) === String(accountId));
-  return found ? found[1] : accountId; // メンバーシートにない場合はIDをそのまま使用
-}
-
-function applyStatusColor(sheet, rowNumber, status) {
-  const cell = sheet.getRange(rowNumber, 11); // K列 = ステータス
-  if (status === STATUS_PENDING)  cell.setBackground('#FFF9C4'); // 黄色
-  if (status === STATUS_FINISHED) cell.setBackground('#C8E6C9'); // 緑
+function getProjectMap() {
+  const s = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PROJECTS);
+  if (!s || s.getLastRow() <= 1) return {};
+  const map = {};
+  s.getRange(2,1,s.getLastRow()-1,2).getValues().forEach(r => { map[String(r[0])] = String(r[1]); });
+  return map;
 }
 
 // ============================================================
-// シート直接編集の検知 — ステータス変更時に自動で色・日時・ログを更新
+// シート編集検知
 // ============================================================
 function onEdit(e) {
   const sheet = e.range.getSheet();
+  const name  = sheet.getName();
 
-  // タスクシート以外は無視
-  if (sheet.getName() !== SHEET_TASKS) return;
+  // ダッシュボードフィルター変更
+  if (name === SHEET_DASHBOARD && e.range.getRow() === 2 && (e.range.getColumn() === 2 || e.range.getColumn() === 6)) {
+    refreshDashboard(); return;
+  }
 
-  // K列（11列目）= ステータス列以外は無視
-  if (e.range.getColumn() !== 11) return;
+  // タスクシートのステータス変更
+  if (name !== SHEET_TASKS || e.range.getColumn() !== 11 || e.range.getRow() === 1) return;
 
-  // ヘッダー行は無視
-  if (e.range.getRow() === 1) return;
+  const val = String(e.value || '').trim();
+  const row = e.range.getRow();
 
-  const newStatus = String(e.value || '').trim();
-  const rowNumber = e.range.getRow();
-  const validStatuses = [STATUS_PENDING, STATUS_FINISHED];
-
-  // 無効なステータスが入力された場合は元に戻す
-  if (!validStatuses.includes(newStatus)) {
+  if (val !== STATUS_PENDING && val !== STATUS_FINISHED) {
     e.range.setValue(e.oldValue || STATUS_PENDING);
-    SpreadsheetApp.getUi().alert(
-      '無効なステータスです。\n使用できる値：未完了、完了'
-    );
+    SpreadsheetApp.getUi().alert('無効なステータスです。\n使用できる値：未完了、完了');
     return;
   }
 
-  // 更新日時を自動セット（C列 = 3列目）
-  sheet.getRange(rowNumber, 3).setValue(new Date());
-
-  // 色を更新
-  applyStatusColor(sheet, rowNumber, newStatus);
-
-  // タスクIDと変更者を取得してログに記録
-  const taskId    = sheet.getRange(rowNumber, 1).getValue();
-  const oldStatus = e.oldValue || '';
-  const changedBy = Session.getActiveUser().getEmail();
-
-  addLog(taskId, oldStatus, newStatus, changedBy);
+  sheet.getRange(row, 3).setValue(new Date());
+  sheet.getRange(row, 11).setBackground(val === STATUS_FINISHED ? '#C8E6C9' : '#FFF9C4');
+  addLog(sheet.getRange(row,1).getValue(), e.oldValue||'', val, Session.getActiveUser().getEmail());
+  refreshDashboard();
 }
