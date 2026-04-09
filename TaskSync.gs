@@ -3,24 +3,26 @@
 // ============================================================
 
 function pollChatWork() {
+  if (isOutsideWorkingHours()) return;
+
   const props = PropertiesService.getScriptProperties();
 
   try {
-    const ss         = SpreadsheetApp.getActiveSpreadsheet();
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
     const roomsSheet = ss.getSheetByName(SHEET_ROOMS);
     if (!roomsSheet || roomsSheet.getLastRow() <= 1) return;
 
-    const rows      = roomsSheet.getRange(2, 1, roomsSheet.getLastRow() - 1, 3).getValues();
+    const rows = roomsSheet.getRange(2, 1, roomsSheet.getLastRow() - 1, 3).getValues();
     const totalRooms = rows.length;
     if (totalRooms === 0) return;
 
     const startIdx = Number(props.getProperty('POLL_INDEX') || 0) % totalRooms;
-    let processed  = 0;
+    let processed = 0;
 
     for (let n = 0; n < ROOMS_PER_BATCH && n < totalRooms; n++) {
-      const i           = (startIdx + n) % totalRooms;
-      const roomId      = String(rows[i][0]).trim();
-      const roomName    = String(rows[i][1]).trim();
+      const i = (startIdx + n) % totalRooms;
+      const roomId = String(rows[i][0]).trim();
+      const roomName = String(rows[i][1]).trim();
       const lastChecked = rows[i][2] ? Number(rows[i][2]) : 0;
 
       if (!roomId) continue;
@@ -37,7 +39,7 @@ function pollChatWork() {
         const messages = fetchMessages(roomId, lastChecked);
         if (messages.length > 0) {
           processCommands(messages);
-          roomsSheet.getRange(i + 2, 3).setValue(Math.max(...messages.map(m => m.send_time)));
+          roomsSheet.getRange(i + 2, 3).setValue(Math.max(...messages.map((m) => m.send_time)));
         }
         processed++;
       } catch (e) {
@@ -50,20 +52,24 @@ function pollChatWork() {
 
     props.setProperty('POLL_FAIL_COUNT', '0');
     Logger.log(`ポーリング完了: ${processed}/${ROOMS_PER_BATCH}件（位置 ${startIdx}〜）`);
-
   } catch (e) {
     const failCount = Number(props.getProperty('POLL_FAIL_COUNT') || 0) + 1;
     props.setProperty('POLL_FAIL_COUNT', String(failCount));
     Logger.log(`ポーリング全体エラー (${failCount}回目): ${e.message}`);
 
-    if (failCount === FAIL_NOTIFY_THRESHOLD) {
+    if (failCount >= FAIL_NOTIFY_THRESHOLD && failCount % FAIL_NOTIFY_THRESHOLD === 0) {
       const owner = NOTIFY_EMAIL || Session.getEffectiveUser().getEmail();
       if (owner) {
-        MailApp.sendEmail(owner,
+        MailApp.sendEmail(
+          owner,
           '【タスク管理ツール】ポーリングエラー通知',
-          'タスク管理ツールのポーリングが ' + FAIL_NOTIFY_THRESHOLD + ' 回連続で失敗しました。\n\n' +
-          'エラー内容: ' + e.message + '\n\n' +
-          'スプレッドシートを確認してください。'
+          'タスク管理ツールのポーリングが ' +
+            FAIL_NOTIFY_THRESHOLD +
+            ' 回連続で失敗しました。\n\n' +
+            'エラー内容: ' +
+            e.message +
+            '\n\n' +
+            'スプレッドシートを確認してください。',
         );
         Logger.log('エラー通知メール送信済み: ' + owner);
       }
@@ -76,13 +82,13 @@ function pollChatWork() {
 // ============================================================
 
 function syncChatworkTasks(roomId, roomName) {
-  const projectMap   = getProjectMap();
+  const projectMap = getProjectMap();
   const existingCwIds = getExistingCwTaskIds();
 
   const openTasks = fetchChatworkTasks(roomId, 'open');
 
   const projectByGroup = {};
-  openTasks.forEach(t => {
+  openTasks.forEach((t) => {
     const aid = String(t.account.account_id);
     const cid = String(t.assigned_by_account.account_id);
     const key = cid + '|' + (t.body || '');
@@ -90,31 +96,31 @@ function syncChatworkTasks(roomId, roomName) {
     if (projectMap[cid]) projectByGroup[key] = projectMap[cid];
   });
 
-  openTasks.forEach(t => {
-    const cwTaskId   = String(t.task_id);
-    const aid        = String(t.account.account_id);
-    const cid        = String(t.assigned_by_account.account_id);
-    const key        = cid + '|' + (t.body || '');
+  openTasks.forEach((t) => {
+    const cwTaskId = String(t.task_id);
+    const aid = String(t.account.account_id);
+    const cid = String(t.assigned_by_account.account_id);
+    const key = cid + '|' + (t.body || '');
 
     if (projectMap[aid]) return;
     if (existingCwIds.has(cwTaskId)) return;
 
     createTask({
-      description   : t.body || '',
-      assignedToId  : aid,
+      description: t.body || '',
+      assignedToId: aid,
       assignedToName: t.account.name,
-      createdById   : cid,
-      createdByName : t.assigned_by_account.name,
-      roomId        : roomId,
-      cwTaskId      : cwTaskId,
-      project       : projectByGroup[key] || '',
-      dueDate       : t.limit_time ? new Date(t.limit_time * 1000) : ''
+      createdById: cid,
+      createdByName: t.assigned_by_account.name,
+      roomId: roomId,
+      cwTaskId: cwTaskId,
+      project: projectByGroup[key] || '',
+      dueDate: t.limit_time ? new Date(t.limit_time * 1000) : '',
     });
     existingCwIds.add(cwTaskId);
   });
 
   const doneTasks = fetchChatworkTasks(roomId, 'done');
-  doneTasks.forEach(t => {
+  doneTasks.forEach((t) => {
     if (projectMap[String(t.account.account_id)]) return;
     markTaskDoneByCwId(String(t.task_id));
   });
@@ -125,22 +131,31 @@ function syncChatworkTasks(roomId, roomName) {
 // ============================================================
 
 function createTask(d) {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_TASKS);
-  const now   = new Date();
+  const now = new Date();
 
   sheet.appendRow([
-    'TASK-' + now.getTime(), now, now,
-    d.description, d.assignedToId, d.assignedToName,
-    d.createdById, d.createdByName, d.roomId,
-    d.cwTaskId, STATUS_PENDING, d.project || '', d.dueDate || ''
+    'TASK-' + now.getTime(),
+    now,
+    now,
+    d.description,
+    d.assignedToId,
+    d.assignedToName,
+    d.createdById,
+    d.createdByName,
+    d.roomId,
+    d.cwTaskId,
+    STATUS_PENDING,
+    d.project || '',
+    d.dueDate || '',
   ]);
 
   const row = sheet.getLastRow();
   sheet.getRange(row, 11).setBackground('#FFF9C4');
 
   addLog('TASK-' + now.getTime(), '', STATUS_PENDING, d.createdByName);
-  Logger.log(`タスク作成: ${d.assignedToName} — ${d.description.substring(0,30)}`);
+  Logger.log(`タスク作成: ${d.assignedToName} — ${d.description.substring(0, 30)}`);
 }
 
 function markTaskDoneByCwId(cwTaskId) {
@@ -164,27 +179,48 @@ function markTaskDoneByCwId(cwTaskId) {
 // ============================================================
 
 function syncRooms() {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_ROOMS);
   const existing = new Set();
   if (sheet.getLastRow() > 1) {
-    sheet.getRange(2,1,sheet.getLastRow()-1,1).getValues().forEach(r => existing.add(String(r[0])));
+    sheet
+      .getRange(2, 1, sheet.getLastRow() - 1, 1)
+      .getValues()
+      .forEach((r) => existing.add(String(r[0])));
   }
 
   try {
     const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms`, {
-      headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+      headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN },
+      muteHttpExceptions: true,
     });
     if (res.getResponseCode() !== 200) return;
     const rooms = JSON.parse(res.getContentText());
     const newRows = [];
-    rooms.forEach(r => {
+    rooms.forEach((r) => {
       const id = String(r.room_id);
-      if (!existing.has(id)) { newRows.push([id, r.name, '']); existing.add(id); }
+      if (!existing.has(id)) {
+        newRows.push([id, r.name, '']);
+        existing.add(id);
+      }
     });
-    if (newRows.length > 0) sheet.getRange(sheet.getLastRow()+1, 1, newRows.length, 3).setValues(newRows);
-    Logger.log(`ルーム同期: ${newRows.length}件追加（合計${existing.size}件）`);
-  } catch(e) { Logger.log(`ルーム取得エラー: ${e.message}`); }
+    if (newRows.length > 0)
+      sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 3).setValues(newRows);
+
+    // 存在しないルームを削除
+    var activeRoomIds = new Set(rooms.map(function (r) { return String(r.room_id); }));
+    for (var i = sheet.getLastRow(); i >= 2; i--) {
+      var sheetRoomId = String(sheet.getRange(i, 1).getValue());
+      if (!activeRoomIds.has(sheetRoomId)) {
+        Logger.log('ルーム削除: ' + sheetRoomId);
+        sheet.deleteRow(i);
+      }
+    }
+
+    Logger.log(`ルーム同期: ${newRows.length}件追加（合計${activeRoomIds.size}件）`);
+  } catch (e) {
+    Logger.log(`ルーム取得エラー: ${e.message}`);
+  }
 }
 
 // ============================================================
@@ -192,49 +228,84 @@ function syncRooms() {
 // ============================================================
 
 function syncMembers() {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const rSheet = ss.getSheetByName(SHEET_ROOMS);
   const mSheet = ss.getSheetByName(SHEET_MEMBERS);
   if (!rSheet || rSheet.getLastRow() <= 1) return;
 
-  const props  = PropertiesService.getScriptProperties();
-  const rooms  = rSheet.getRange(2, 1, rSheet.getLastRow() - 1, 2).getValues();
-  const total  = rooms.length;
+  const props = PropertiesService.getScriptProperties();
+  const rooms = rSheet.getRange(2, 1, rSheet.getLastRow() - 1, 2).getValues();
+  const total = rooms.length;
   const startIdx = Number(props.getProperty('MEMBER_SYNC_INDEX') || 0) % total;
 
   const existing = new Set();
   if (mSheet.getLastRow() > 1) {
-    mSheet.getRange(2, 1, mSheet.getLastRow() - 1, 4).getValues()
-      .forEach(r => existing.add(String(r[0]) + '_' + String(r[2])));
+    mSheet
+      .getRange(2, 1, mSheet.getLastRow() - 1, 4)
+      .getValues()
+      .forEach((r) => existing.add(String(r[0]) + '_' + String(r[2])));
   }
 
   const newRows = [];
   const batchSize = Math.min(MEMBERS_BATCH_SIZE, total);
+  var apiMembers = new Set();
+  var checkedRooms = new Set();
 
   for (let n = 0; n < batchSize; n++) {
     const i = (startIdx + n) % total;
-    const roomId   = String(rooms[i][0]).trim();
+    const roomId = String(rooms[i][0]).trim();
     const roomName = String(rooms[i][1]).trim();
     if (!roomId) continue;
+
+    checkedRooms.add(roomId);
 
     try {
       if (n > 0) Utilities.sleep(1000);
       const res = UrlFetchApp.fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/members`, {
-        headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN }, muteHttpExceptions: true
+        headers: { 'X-ChatWorkToken': CHATWORK_API_TOKEN },
+        muteHttpExceptions: true,
       });
       const code = res.getResponseCode();
-      if (code === 429) { Utilities.sleep(10000); continue; }
-      if (code !== 200) continue;
-      JSON.parse(res.getContentText()).forEach(m => {
+      if (code === 429) {
+        Utilities.sleep(10000);
+        checkedRooms.delete(roomId);
+        continue;
+      }
+      if (code !== 200) { checkedRooms.delete(roomId); continue; }
+      JSON.parse(res.getContentText()).forEach((m) => {
         const key = String(m.account_id) + '_' + roomId;
-        if (!existing.has(key)) { newRows.push([String(m.account_id), m.name, roomId, roomName]); existing.add(key); }
+        apiMembers.add(key);
+        if (!existing.has(key)) {
+          newRows.push([String(m.account_id), m.name, roomId, roomName]);
+          existing.add(key);
+        }
       });
-    } catch (e) { Logger.log(`メンバー取得エラー [${roomId}]: ${e.message}`); }
+    } catch (e) {
+      Logger.log(`メンバー取得エラー [${roomId}]: ${e.message}`);
+      checkedRooms.delete(roomId);
+    }
   }
 
-  if (newRows.length > 0) mSheet.getRange(mSheet.getLastRow() + 1, 1, newRows.length, 4).setValues(newRows);
-  if (mSheet.getLastRow() > 2) mSheet.getRange(2, 1, mSheet.getLastRow() - 1, 4).sort({ column: 4, ascending: true });
+  if (newRows.length > 0)
+    mSheet.getRange(mSheet.getLastRow() + 1, 1, newRows.length, 4).setValues(newRows);
+
+  // 存在しないメンバーを削除（確認済みルームのみ）
+  for (var i = mSheet.getLastRow(); i >= 2; i--) {
+    var row = mSheet.getRange(i, 1, 1, 4).getValues()[0];
+    var memberRoomId = String(row[2]);
+    var memberKey = String(row[0]) + '_' + memberRoomId;
+
+    if (checkedRooms.has(memberRoomId) && !apiMembers.has(memberKey)) {
+      Logger.log('メンバー削除: ' + row[1] + ' (ルーム ' + memberRoomId + ')');
+      mSheet.deleteRow(i);
+    }
+  }
+
+  if (mSheet.getLastRow() > 2)
+    mSheet.getRange(2, 1, mSheet.getLastRow() - 1, 4).sort({ column: 4, ascending: true });
 
   props.setProperty('MEMBER_SYNC_INDEX', String((startIdx + batchSize) % total));
-  Logger.log(`メンバー同期: ${newRows.length}名追加（ルーム ${startIdx}〜${startIdx + batchSize - 1}）`);
+  Logger.log(
+    `メンバー同期: ${newRows.length}名追加（ルーム ${startIdx}〜${startIdx + batchSize - 1}）`,
+  );
 }

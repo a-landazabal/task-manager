@@ -29,7 +29,8 @@ function setupGuide() {
   row++;
   g.getRange(row, 1, 1, 2).merge().setValue(
     'Chatworkのタスクを自動的にこのスプレッドシートに取り込み、Notion・Googleカレンダーと連携するツールです。\n' +
-    'Chatwork → スプレッドシート（毎1分） → Notion（毎5分） → Googleカレンダー（毎10分）で自動同期します。'
+    'Chatwork → スプレッドシート（毎1分） → Notion（毎5分） → Googleカレンダー（毎10分）で自動同期します。\n' +
+    '※ 稼働時間: 8:30〜20:00（この時間外はAPI節約のため自動停止します）'
   ).setFontSize(10).setVerticalAlignment('top');
   g.setRowHeight(row, 50);
 
@@ -94,7 +95,10 @@ function setupGuide() {
   g.getRange(row, 1, 1, 2).merge().setValue(
     'スプレッドシートのタスクは5分ごとにNotionデータベースへ自動同期されます。\n' +
     'Notionでは以下の情報が表示されます：タスク名、担当者、作成者、プロジェクト、期限、ステータス、ルーム名\n\n' +
-    'Notionのカンバンビューやカレンダービューで、タスクを視覚的に管理できます。'
+    'タスク名の先頭に絵文字でステータスが表示されます：\n' +
+    '  🟡 = 未完了（進行中）\n' +
+    '  🟢 = 完了\n\n' +
+    '担当者別ボードビューで、誰がどのタスクを持っているか一目で確認できます。'
   ).setFontSize(10).setVerticalAlignment('top');
   g.setRowHeight(row, 75);
 
@@ -106,7 +110,8 @@ function setupGuide() {
   row++;
   g.getRange(row, 1, 1, 2).merge().setValue(
     '期限があるタスクは10分ごとにGoogleカレンダー（Chatworkタスク）へ自動同期されます。\n\n' +
-    '・未完了タスク → 赤色の終日イベント [未完了] 担当者 — タスク内容\n' +
+    '・未完了タスク → 黄色の終日イベント [未完了] 担当者 — タスク内容\n' +
+    '・期限超過タスク → 赤色の終日イベント [未完了] 担当者 — タスク内容\n' +
     '・完了タスク → 緑色の終日イベント [完了] 担当者 — タスク内容\n\n' +
     'イベントをクリックすると、担当者・作成者・プロジェクト・ルーム名が確認できます。'
   ).setFontSize(10).setVerticalAlignment('top');
