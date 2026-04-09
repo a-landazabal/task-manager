@@ -80,7 +80,7 @@ Chatwork API → Google Sheet (every 1 min) → Notion DB (every 5 min) → Goog
 
 | Trigger | Interval | Function | File |
 |---|---|---|---|
-| pollChatWork | Every 1 min | Batch poll Chatwork rooms for tasks/messages | TaskSync.gs |
+| pollChatWork | Every 5 min | Batch poll Chatwork rooms for tasks/messages | TaskSync.gs |
 | dailySync | Daily at 6:00 | Sync new Chatwork rooms | Triggers.gs |
 | memberSync | Every 1 hour | Batch sync members (20 rooms/run) | Triggers.gs |
 | notionSync | Every 5 min | Sync tasks from Sheet → Notion | Triggers.gs |
@@ -96,16 +96,36 @@ Chatwork API → Google Sheet (every 1 min) → Notion DB (every 5 min) → Goog
 5. **Dashboard** (`refreshDashboard()` in Dashboard.gs) — auto-updates filter dropdowns, 9-column display with 期限
 6. **Notion Sync** (`syncTasksToNotion()` in NotionSync.gs) — creates new pages, updates status changes, uses タスクID for dedup
 7. **Calendar Sync** (`syncNotionToCalendar()` in CalendarSync.gs) — creates all-day events for tasks with 期限, updates color on completion
-8. **Error notification** — emails owner after 10 consecutive polling failures
+8. **Error notification** — emails owner every 10 consecutive polling failures (10, 20, 30, etc.)
+9. **Stale cleanup** — `syncRooms()` removes rooms no longer in Chatwork, `syncMembers()` removes members who left rooms
 
 ## API Rate Limit Handling
 
-- `fetchChatworkTasks()` retries once after 5s on HTTP 429
+- `fetchChatworkTasks()` and `fetchMessages()` retry 3 times with exponential backoff (5s, 10s, 20s) on HTTP 429
 - `syncMembers()` sleeps 1s between rooms, skips on 429 (10s wait)
-- Batch rotation keeps Chatwork polling to ~15 API calls/min
+- Batch rotation keeps Chatwork polling to ~10 API calls per run
 - Member sync: 20 rooms/hour, full rotation scales with room count
 - Notion sync: 500ms sleep every 3 operations
 - GAS daily quota: 20,000 URL fetches/day (free), 100,000 (Workspace)
+
+## Daily API Usage Estimate (8:30-20:00)
+
+| Function | Interval | Calls/run | Runs/day | Total |
+|---|---|---|---|---|
+| pollChatWork | 5 min | ~10 | 138 | ~1,380 |
+| notionSync | 5 min | ~5 | 138 | ~690 |
+| calendarSync | 10 min | ~5 | 69 | ~345 |
+| memberSync | 1 hour | ~20 | 11 | ~220 |
+| dailySync | 1x at 6 AM | ~2 | 1 | ~2 |
+| **Total** | | | | **~2,600** |
+
+Approximately 13% of the 20,000 GAS free daily quota.
+
+## Working Hours
+
+- All triggers except `dailySync` and `onEdit` are guarded by `isOutsideWorkingHours()` (8:30-20:00)
+- `dailySync` runs at 6:00 AM (before working hours) to sync rooms before polling starts
+- `onEdit` always responds (user-initiated)
 
 ## Conventions
 
@@ -114,7 +134,8 @@ Chatwork API → Google Sheet (every 1 min) → Notion DB (every 5 min) → Goog
 - Notion status mapping: `未着手` = 未完了, `完了` = 完了
 - Task IDs: `TASK-{timestamp}` format
 - Color coding (Sheet): `#FFF9C4` = pending (yellow), `#C8E6C9` = done (green)
-- Color coding (Calendar): Red = pending, Green = done
+- Color coding (Calendar): Yellow = pending, Red = overdue (past due date), Green = done
+- Notion emoji status: 🟡 = pending, 🟢 = done (prefixed to task title)
 - Sheet protection: warning-only (editors can override, viewers cannot interact)
 - Project detection: Chatwork accounts in プロジェクト sheet are treated as labels, not assignees
 

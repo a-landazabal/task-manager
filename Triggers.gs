@@ -158,7 +158,7 @@ function createTrigger() {
       ScriptApp.deleteTrigger(t);
   });
 
-  ScriptApp.newTrigger('pollChatWork').timeBased().everyMinutes(1).create();
+  ScriptApp.newTrigger('pollChatWork').timeBased().everyMinutes(5).create();
   ScriptApp.newTrigger('dailySync').timeBased().atHour(6).everyDays(1).create();
   ScriptApp.newTrigger('memberSync').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('notionSync').timeBased().everyMinutes(5).create();
