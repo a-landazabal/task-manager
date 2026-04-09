@@ -32,7 +32,7 @@ const NOTIFY_EMAIL = PropertiesService.getScriptProperties().getProperty('NOTIFY
 const CALENDAR_ID = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
 
 // ── バッチ設定 ──
-const ROOMS_PER_BATCH       = 5;    // ポーリング: 1回あたりのルーム数
+const ROOMS_PER_BATCH       = 10;   // ポーリング: 1回あたりのルーム数
 const MEMBERS_BATCH_SIZE    = 20;   // メンバー同期: 1回あたりのルーム数
 const FAIL_NOTIFY_THRESHOLD = 10;   // 連続失敗回数でメール通知
 const LOG_MAX_ROWS          = 1000; // ログ最大行数
